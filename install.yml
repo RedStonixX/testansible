@@ -1,0 +1,56 @@
+---
+- name: Installation SNMP et Ajout automatique dans Centreon
+  hosts: serveurs
+  become: yes
+
+  vars:
+    # Variables SNMP
+    snmp_commu: "projet_communaute"
+    centreon_ip: "192.168.1.8"
+    
+    # Variables pour l'API Centreon
+    centreon_admin: "admin"
+    centreon_password: "Almacentreon1!" # Celui de l'interface web
+
+  tasks:
+    # --- PARTIE 1 : CONFIGURATION DU SERVEUR DEBIAN ---
+    - name: Installation de SNMP
+      apt:
+        name: [snmp, snmpd]
+        state: present
+        update_cache: yes
+
+    - name: Configuration du fichier snmpd.conf
+      blockinfile:
+        path: /etc/snmp/snmpd.conf
+        block: |
+          agentaddress udp:161
+          view centreon included .1.3.6.1
+          rocommunity {{ snmp_commu }} {{ centreon_ip }}
+      notify: restart snmpd
+
+    # --- PARTIE 2 : AJOUT DANS CENTREON (Automatisation) ---
+    - name: Ajouter la machine dans l'inventaire Centreon
+      delegate_to: localhost # On lance la commande depuis la machine Ansible
+      shell: >
+        ssh root@{{ centreon_ip }} "centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a ADD 
+        -v '{{ inventory_hostname }};{{ inventory_hostname }};{{ ansible_host }};OS-Linux-SNMP-custom;central;'"
+      ignore_errors: yes # Pour éviter de bloquer si l'hôte existe déjà
+
+    - name: Appliquer la communauté SNMP à l'hôte dans Centreon
+      delegate_to: localhost
+      shell: >
+        ssh root@{{ centreon_ip }} "centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a setparam 
+        -v '{{ inventory_hostname }};snmp_community;{{ snmp_commu }}'"
+
+    - name: Appliquer la version SNMP à l'hôte dans Centreon
+      delegate_to: localhost
+      shell: >
+        ssh root@{{ centreon_ip }} "centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a setparam 
+        -v '{{ inventory_hostname }};snmp_version;2c'"
+
+  handlers:
+    - name: restart snmpd
+      service:
+        name: snmpd
+        state: restarted
