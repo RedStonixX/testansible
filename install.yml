@@ -16,7 +16,7 @@
     centreon_password: "Almacentreon1!"
 
     # --- Variables Vault ---
-    vault_path: "secret/servers/{{ inventory_hostname }}"
+    vault_path: "secret/data/servers/{{ inventory_hostname }}"
 
   tasks:
 
@@ -24,21 +24,23 @@
     # 🔐 VAULT SAFE READ
     # =========================
 
-    - name: Lire secret Vault (safe)
+    - name: Lire secret Vault (KV v2 correct)
       delegate_to: localhost
-      community.hashi_vault.vault_read:
+      community.hashi_vault.vault_kv2_read:
         url: "{{ lookup('env','VAULT_ADDR') }}"
         token: "{{ lookup('env','VAULT_TOKEN') }}"
+        mount_point: "secret"
         path: "servers/{{ inventory_hostname }}"
       register: vault_result
       failed_when: false
 
-    - name: Extraire secret Vault proprement
+    - name: Extraire secret
       set_fact:
-        vault_secret: "{{ vault_result.data.password | default('') }}"
+        vault_secret: "{{ vault_result.data.data.password | default('') }}"
 
     - name: Debug Vault secret
       debug:
+        var: vault_secret
         var: vault_result
 
     # =========================
