@@ -10,10 +10,10 @@
     # --- Variables SNMP ---
     snmp_commu: "projet_communaute"
     centreon_ip: "192.168.1.8"
-    
+
     # --- Variables Centreon ---
     centreon_admin: "admin"
-    centreon_password: "Almacentreon1!" 
+    centreon_password: "Almacentreon1!"
 
     # --- Variables Vault ---
     vault_path: "secret/servers/{{ inventory_hostname }}"
@@ -21,43 +21,63 @@
   tasks:
 
     # =========================
-    # 🔐 PARTIE VAULT (AJOUTÉE)
+    # 🔐 VAULT SAFE READ
     # =========================
 
-    - name: Lire le mot de passe depuis Vault (si existant)
+    - name: Lire secret Vault (safe)
       delegate_to: localhost
-      block:
+      community.hashi_vault.vault_read:
+        url: "{{ lookup('env','VAULT_ADDR') }}"
+        token: "{{ lookup('env','VAULT_TOKEN') }}"
+        path: "{{ vault_path }}"
+      register: vault_result
+      failed_when: false
 
-        - name: Try get password from Vault
-          set_fact:
-            vault_secret: "{{ lookup('community.hashi_vault.hashi_vault',
-                              'secret=' + vault_path + ' field=password') }}"
+    - name: Extraire secret Vault de façon safe
+      set_fact:
+        vault_secret: >-
+          {{
+            (vault_result.data.data.password | default(''))
+            if (vault_result is defined and vault_result.data is defined)
+            else ''
+          }}
 
-      rescue:
+    # =========================
+    # 🔐 GENERATION PASSWORD
+    # =========================
 
-        - name: Secret absent dans Vault
-          set_fact:
-            vault_secret: ""
-
-    - name: Générer un mot de passe si absent
+    - name: Générer mdp si absent dans Vault
       when: vault_secret | default('') | trim == ''
-      delegate_to: localhost
       set_fact:
         new_root_password: "{{ lookup('password', '/dev/null length=5 chars=ascii_letters') }}"
 
-    - name: Stocker le mot de passe dans Vault
+    - name: Définir mot de passe final (Vault ou nouveau)
+      set_fact:
+        final_password: >-
+          {{
+            vault_secret
+            if (vault_secret | default('') | trim != '')
+            else new_root_password
+          }}
+
+    # =========================
+    # 🔐 STOCKAGE VAULT
+    # =========================
+
+    - name: Stocker mot de passe dans Vault
       when: new_root_password is defined
-      delegate_to: localhost
       shell: >
         vault kv put {{ vault_path }} password="{{ new_root_password }}"
 
-    - name: Hasher le mot de passe
-      when: new_root_password is defined
-      set_fact:
-        root_password_hashed: "{{ new_root_password | password_hash('sha512') }}"
+    # =========================
+    # 🔐 HASH PASSWORD
+    # =========================
 
-    - name: Appliquer le mot de passe root sur la machine
-      when: new_root_password is defined
+    - name: Hasher le mot de passe root
+      set_fact:
+        root_password_hashed: "{{ final_password | password_hash('sha512') }}"
+
+    - name: Appliquer le mot de passe root
       user:
         name: root
         password: "{{ root_password_hashed }}"
@@ -105,7 +125,7 @@
         regexp: '^#?PasswordAuthentication'
         line: 'PasswordAuthentication yes'
 
-    - name: Configurer SSH - MFA uniquement pour mot de passe
+    - name: Configurer SSH - MFA uniquement pour login interactif
       blockinfile:
         path: /etc/ssh/sshd_config
         block: |
@@ -115,21 +135,21 @@
       notify: restart ssh
 
     # =========================
-    # SNMP + Centreon (inchangé)
+    # 🖧 SNMP + CENTREON
     # =========================
 
-    - name: Installation de SNMP
+    - name: Installation SNMP
       apt:
         name: [snmp, snmpd]
         state: present
 
-    - name: Appliquer la nouvelle configuration SNMP
+    - name: Supprimer ancienne config agentaddress
       lineinfile:
         path: /etc/snmp/snmpd.conf
         regexp: '^agentaddress'
         state: absent
 
-    - name: Configuration du fichier snmpd.conf
+    - name: Config SNMP
       blockinfile:
         path: /etc/snmp/snmpd.conf
         block: |
@@ -138,7 +158,7 @@
           rocommunity {{ snmp_commu }} {{ centreon_ip }}
       notify: restart snmpd
 
-    - name: Vérifier si l'hôte existe dans Centreon
+    - name: Vérifier host Centreon
       delegate_to: localhost
       shell: >
         ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "
@@ -147,36 +167,40 @@
       changed_when: false
       failed_when: false
 
-    - name: Ajouter la machine dans Centreon si elle n'existe pas
+    - name: Ajouter host Centreon si absent
       delegate_to: localhost
       shell: >
         ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "
-        centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a ADD 
+        centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a ADD
         -v '{{ inventory_hostname }};{{ inventory_hostname }};{{ ansible_host }};OS-Linux-SNMP-custom;central;'"
       when: centreon_host_check.stdout == ""
 
-    - name: Appliquer les paramètres SNMP dans Centreon
+    - name: Appliquer paramètres SNMP Centreon
       delegate_to: localhost
       shell: >
-        ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a setparam 
+        ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "
+        centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a setparam
         -v '{{ inventory_hostname }};{{ item.param }};{{ item.value }}'"
       loop:
         - { param: 'snmp_community', value: "{{ snmp_commu }}" }
         - { param: 'snmp_version', value: '2c' }
 
-    - name: Générer les services
+    - name: Générer services Centreon
       delegate_to: localhost
       shell: >
-        ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a applytpl 
+        ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "
+        centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a applytpl
         -v '{{ inventory_hostname }}'"
 
-    - name: Appliquer la configuration Centreon
+    - name: Appliquer config Centreon
       delegate_to: localhost
       shell: >
-        ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "centreon -u {{ centreon_admin }} -p {{ centreon_password }} -a APPLYCFG 
+        ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "
+        centreon -u {{ centreon_admin }} -p {{ centreon_password }} -a APPLYCFG
         -v 'Central'"
 
   handlers:
+
     - name: restart snmpd
       service:
         name: snmpd
