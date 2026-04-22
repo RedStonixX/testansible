@@ -1,24 +1,62 @@
----
-- name: Installation SNMP et Ajout automatique dans Centreon
+- name: Configuration SNMP, Centreon et MFA SSH
   hosts: serveurs
   become: yes
 
   vars:
-    # Variables SNMP
+    # --- Variables MFA ---
+    target_user: "root" # L'utilisateur qui aura besoin de l'OTP
+    local_otp_secret: "/root/ansible/.google_authenticator" # Chemin de ton fichier local
+
+    # --- Variables SNMP ---
     snmp_commu: "projet_communaute"
     centreon_ip: "192.168.1.8"
     
-    # Variables pour l'API Centreon
+    # --- Variables pour l'API Centreon ---
     centreon_admin: "admin"
-    centreon_password: "Almacentreon1!" # Celui de l'interface web
+    centreon_password: "Almacentreon1!" 
 
   tasks:
-    # --- PARTIE 1 : CONFIGURATION DU SERVEUR DEBIAN ---
+    # --- PARTIE 0 : CONFIGURATION DOUBLE AUTHENTIFICATION (MFA) ---
+    - name: Installer le module PAM Google Authenticator
+      apt:
+        name: libpam-google-authenticator
+        state: present
+        update_cache: yes
+
+    - name: Déployer le secret OTP commun
+      copy:
+        src: "{{ local_otp_secret }}"
+        dest: "/{{ target_user }}/.google_authenticator"
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+        mode: '0400'
+
+    - name: Configurer PAM pour SSH (Ajout de l'OTP)
+      lineinfile:
+        path: /etc/pam.d/sshd
+        line: "auth required pam_google_authenticator.so"
+        insertafter: EOF
+
+    - name: Configurer SSH - Activer l'auth interactive et définir les méthodes
+      blockinfile:
+        path: /etc/ssh/sshd_config
+        block: |
+          KbdInteractiveAuthentication yes
+          # La ligne suivante dit : Si Clé Privée -> OK. Si Mot de passe -> Demander OTP.
+          AuthenticationMethods publickey password,keyboard-interactive
+      notify: restart ssh
+
+    # --- PARTIE 1 : CONFIGURATION DU SERVEUR DEBIAN (SNMP) ---
     - name: Installation de SNMP
       apt:
         name: [snmp, snmpd]
         state: present
-        update_cache: yes
+
+    - name: Appliquer la nouvelle configuration SNMP
+      lineinfile:
+        path: /etc/snmp/snmpd.conf
+        regexp: '^agentaddress'
+        state: absent
 
     - name: Configuration du fichier snmpd.conf
       blockinfile:
@@ -31,26 +69,41 @@
 
     # --- PARTIE 2 : AJOUT DANS CENTREON (Automatisation) ---
     - name: Ajouter la machine dans l'inventaire Centreon
-      delegate_to: localhost # On lance la commande depuis la machine Ansible
+      delegate_to: localhost
       shell: >
-        ssh root@{{ centreon_ip }} "centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a ADD 
+        ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a ADD 
         -v '{{ inventory_hostname }};{{ inventory_hostname }};{{ ansible_host }};OS-Linux-SNMP-custom;central;'"
-      ignore_errors: yes # Pour éviter de bloquer si l'hôte existe déjà
+      ignore_errors: yes
 
-    - name: Appliquer la communauté SNMP à l'hôte dans Centreon
+    - name: Appliquer les paramètres SNMP dans Centreon
       delegate_to: localhost
       shell: >
-        ssh root@{{ centreon_ip }} "centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a setparam 
-        -v '{{ inventory_hostname }};snmp_community;{{ snmp_commu }}'"
+        ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a setparam 
+        -v '{{ inventory_hostname }};{{ item.param }};{{ item.value }}'"
+      loop:
+        - { param: 'snmp_community', value: "{{ snmp_commu }}" }
+        - { param: 'snmp_version', value: '2c' }
 
-    - name: Appliquer la version SNMP à l'hôte dans Centreon
+    - name: Générer les services (Apply Template)
       delegate_to: localhost
       shell: >
-        ssh root@{{ centreon_ip }} "centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a setparam 
-        -v '{{ inventory_hostname }};snmp_version;2c'"
+        ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a applytpl 
+        -v '{{ inventory_hostname }}'"
+
+    - name: Exportation et Redémarrage de la supervision
+      delegate_to: localhost
+      shell: >
+        ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "centreon -u {{ centreon_admin }} -p {{ centreon_password }} -a APPLYCFG 
+        -v 'Central'"
+      register: clapi_output
 
   handlers:
     - name: restart snmpd
       service:
         name: snmpd
+        state: restarted
+
+    - name: restart ssh
+      service:
+        name: ssh
         state: restarted
