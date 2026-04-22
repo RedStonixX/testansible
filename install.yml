@@ -29,17 +29,17 @@
       community.hashi_vault.vault_read:
         url: "{{ lookup('env','VAULT_ADDR') }}"
         token: "{{ lookup('env','VAULT_TOKEN') }}"
-        path: "{{ vault_path | regex_replace('^secret/', '') }}"
+        path: "servers/{{ inventory_hostname }}"
       register: vault_result
       failed_when: false
 
     - name: Extraire secret Vault proprement
       set_fact:
-        vault_secret: "{{ vault_result.data.data.password | default('') }}"
+        vault_secret: "{{ vault_result.data.password | default('') }}"
 
     - name: Debug Vault secret
       debug:
-        var: vault_secret
+        var: vault_result
 
     # =========================
     # 🔐 GENERATION PASSWORD
