@@ -27,14 +27,14 @@
     - name: Vérifier si un mot de passe existe dans Vault
       delegate_to: localhost
       set_fact:
-        vault_secret: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=' + vault_path + ' field=password', errors='ignore') }}"
+        vault_secret: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=' + vault_path + ' field=password') | default('') }}"
       failed_when: false
 
     - name: Générer un mot de passe si absent
-      when: vault_secret is not defined or vault_secret == ""
+      when: vault_secret | default('') | trim == ''
       delegate_to: localhost
       set_fact:
-        new_root_password: "{{ lookup('password', '/dev/null length=20 chars=ascii_letters') }}"
+        new_root_password: "{{ lookup('password', '/dev/null length=5 chars=ascii_letters') }}"
 
     - name: Stocker le mot de passe dans Vault
       when: new_root_password is defined
