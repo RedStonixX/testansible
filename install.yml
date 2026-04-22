@@ -66,8 +66,9 @@
 
     - name: Stocker mot de passe dans Vault
       when: new_root_password is defined
+      delegate_to: localhost
       shell: >
-        vault kv put {{ vault_path }} password="{{ new_root_password }}"
+        vault kv put {{ vault_path }} password='{{ new_root_password }}'
 
     # =========================
     # 🔐 HASH PASSWORD
