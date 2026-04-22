@@ -11,12 +11,52 @@
     snmp_commu: "projet_communaute"
     centreon_ip: "192.168.1.8"
     
-    # --- Variables pour l'API Centreon ---
+    # --- Variables Centreon ---
     centreon_admin: "admin"
     centreon_password: "Almacentreon1!" 
 
+    # --- Variables Vault ---
+    vault_path: "secret/data/servers/{{ inventory_hostname }}"
+
   tasks:
-    # --- PARTIE 0 : CONFIGURATION DOUBLE AUTHENTIFICATION (MFA) ---
+
+    # =========================
+    # 🔐 PARTIE VAULT (AJOUTÉE)
+    # =========================
+
+    - name: Vérifier si un mot de passe existe dans Vault
+      delegate_to: localhost
+      set_fact:
+        vault_secret: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=' + vault_path + ' field=password', errors='ignore') }}"
+      failed_when: false
+
+    - name: Générer un mot de passe si absent
+      when: vault_secret is not defined or vault_secret == ""
+      delegate_to: localhost
+      set_fact:
+        new_root_password: "{{ lookup('password', '/dev/null length=20 chars=ascii_letters') }}"
+
+    - name: Stocker le mot de passe dans Vault
+      when: new_root_password is defined
+      delegate_to: localhost
+      shell: >
+        vault kv put secret/servers/{{ inventory_hostname }} password="{{ new_root_password }}"
+
+    - name: Hasher le mot de passe
+      when: new_root_password is defined
+      set_fact:
+        root_password_hashed: "{{ new_root_password | password_hash('sha512') }}"
+
+    - name: Appliquer le mot de passe root sur la machine
+      when: new_root_password is defined
+      user:
+        name: root
+        password: "{{ root_password_hashed }}"
+
+    # =========================
+    # 🔐 MFA SSH
+    # =========================
+
     - name: Installer le module PAM Google Authenticator
       apt:
         name: libpam-google-authenticator
@@ -31,7 +71,6 @@
         group: "{{ target_user }}"
         mode: '0400'
 
-    # ✅ Corrigé : éviter doublons + config propre
     - name: Configurer PAM pour SSH (OTP)
       lineinfile:
         path: /etc/pam.d/sshd
@@ -44,36 +83,32 @@
         path: /etc/ssh/sshd_config
         regexp: '^#?KbdInteractiveAuthentication'
         line: 'KbdInteractiveAuthentication yes'
-        state: present
 
     - name: Activer ChallengeResponseAuthentication
       lineinfile:
         path: /etc/ssh/sshd_config
         regexp: '^#?ChallengeResponseAuthentication'
         line: 'ChallengeResponseAuthentication yes'
-        state: present
 
     - name: Activer PasswordAuthentication
       lineinfile:
         path: /etc/ssh/sshd_config
         regexp: '^#?PasswordAuthentication'
         line: 'PasswordAuthentication yes'
-        state: present
 
-    # ✅ Corrigé : config SSH complète et cohérente
     - name: Configurer SSH - MFA uniquement pour mot de passe
       blockinfile:
         path: /etc/ssh/sshd_config
         block: |
-          # Clé SSH seule autorisée
-          # Mot de passe → OTP obligatoire
+          UsePAM yes
           AuthenticationMethods publickey keyboard-interactive
-
-          # Autoriser root (sinon blocage possible)
           PermitRootLogin yes
       notify: restart ssh
 
-    # --- PARTIE 1 : CONFIGURATION DU SERVEUR DEBIAN (SNMP) ---
+    # =========================
+    # SNMP + Centreon (inchangé)
+    # =========================
+
     - name: Installation de SNMP
       apt:
         name: [snmp, snmpd]
@@ -94,7 +129,6 @@
           rocommunity {{ snmp_commu }} {{ centreon_ip }}
       notify: restart snmpd
 
-    # --- PARTIE 2 : AJOUT DANS CENTREON (Automatisation) ---
     - name: Vérifier si l'hôte existe dans Centreon
       delegate_to: localhost
       shell: >
@@ -121,18 +155,17 @@
         - { param: 'snmp_community', value: "{{ snmp_commu }}" }
         - { param: 'snmp_version', value: '2c' }
 
-    - name: Générer les services (Apply Template)
+    - name: Générer les services
       delegate_to: localhost
       shell: >
         ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a applytpl 
         -v '{{ inventory_hostname }}'"
 
-    - name: Exportation et Redémarrage de la supervision
+    - name: Appliquer la configuration Centreon
       delegate_to: localhost
       shell: >
         ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "centreon -u {{ centreon_admin }} -p {{ centreon_password }} -a APPLYCFG 
         -v 'Central'"
-      register: clapi_output
 
   handlers:
     - name: restart snmpd
