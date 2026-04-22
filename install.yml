@@ -29,7 +29,7 @@
       community.hashi_vault.vault_read:
         url: "{{ lookup('env','VAULT_ADDR') }}"
         token: "{{ lookup('env','VAULT_TOKEN') }}"
-        path: "{{ vault_path }}"
+        path: "{{ vault_path | regex_replace('^secret/', '') }}"
       register: vault_result
       failed_when: false
 
