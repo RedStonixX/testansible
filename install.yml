@@ -24,17 +24,16 @@
     # 🔐 VAULT SAFE READ
     # =========================
 
-    - name: Lire secret Vault (KV v2 correct)
+    - name: Lire secret Vault (safe KV v2)
       delegate_to: localhost
-      community.hashi_vault.vault_kv2_read:
+      community.hashi_vault.vault_read:
         url: "{{ lookup('env','VAULT_ADDR') }}"
         token: "{{ lookup('env','VAULT_TOKEN') }}"
-        mount_point: "secret"
-        path: "servers/{{ inventory_hostname }}"
+        path: "secret/data/servers/{{ inventory_hostname }}"
       register: vault_result
       failed_when: false
 
-    - name: Extraire secret
+    - name: Extraire secret Vault
       set_fact:
         vault_secret: "{{ vault_result.data.data.password | default('') }}"
 
