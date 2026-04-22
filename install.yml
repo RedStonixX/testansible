@@ -39,18 +39,35 @@
         line: "auth required pam_google_authenticator.so"
         state: present
 
+    - name: Activer KbdInteractiveAuthentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?KbdInteractiveAuthentication'
+        line: 'KbdInteractiveAuthentication yes'
+        state: present
+
+    - name: Activer ChallengeResponseAuthentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?ChallengeResponseAuthentication'
+        line: 'ChallengeResponseAuthentication yes'
+        state: present
+
+    - name: Activer PasswordAuthentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication yes'
+        state: present
+
     # ✅ Corrigé : config SSH complète et cohérente
     - name: Configurer SSH - MFA uniquement pour mot de passe
       blockinfile:
         path: /etc/ssh/sshd_config
         block: |
-          # --- MFA CONFIG ---
-          KbdInteractiveAuthentication yes
-          ChallengeResponseAuthentication yes
-
           # Clé SSH seule autorisée
           # Mot de passe → OTP obligatoire
-          AuthenticationMethods publickey password,keyboard-interactive
+          AuthenticationMethods publickey keyboard-interactive
 
           # Autoriser root (sinon blocage possible)
           PermitRootLogin yes
@@ -78,12 +95,22 @@
       notify: restart snmpd
 
     # --- PARTIE 2 : AJOUT DANS CENTREON (Automatisation) ---
-    - name: Ajouter la machine dans l'inventaire Centreon
+    - name: Vérifier si l'hôte existe dans Centreon
       delegate_to: localhost
       shell: >
-        ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a ADD 
+        ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "
+        centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a show -v '{{ inventory_hostname }}'"
+      register: centreon_host_check
+      changed_when: false
+      failed_when: false
+
+    - name: Ajouter la machine dans Centreon si elle n'existe pas
+      delegate_to: localhost
+      shell: >
+        ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "
+        centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a ADD 
         -v '{{ inventory_hostname }};{{ inventory_hostname }};{{ ansible_host }};OS-Linux-SNMP-custom;central;'"
-      ignore_errors: yes
+      when: centreon_host_check.stdout == ""
 
     - name: Appliquer les paramètres SNMP dans Centreon
       delegate_to: localhost
