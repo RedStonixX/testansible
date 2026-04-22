@@ -33,21 +33,20 @@
       register: vault_result
       failed_when: false
 
-    - name: Extraire secret Vault de façon safe
+    - name: Extraire secret Vault proprement
       set_fact:
-        vault_secret: >-
-          {{
-            (vault_result.data.data.password | default(''))
-            if (vault_result is defined and vault_result.data is defined)
-            else ''
-          }}
+        vault_secret: "{{ vault_result.data.data.password | default('') }}"
+
+    - name: Debug Vault secret
+      debug:
+        var: vault_secret
 
     # =========================
     # 🔐 GENERATION PASSWORD
     # =========================
 
     - name: Générer mdp si absent dans Vault
-      when: vault_secret | default('') | trim == ''
+      when: (vault_secret | default('') | string | length) == 0
       set_fact:
         new_root_password: "{{ lookup('password', '/dev/null length=5 chars=ascii_letters') }}"
 
@@ -65,7 +64,9 @@
     # =========================
 
     - name: Stocker mot de passe dans Vault
-      when: new_root_password is defined
+      when:
+        - new_root_password is defined
+        - (vault_secret | default('') | string | length) == 0
       delegate_to: localhost
       shell: >
         vault kv put {{ vault_path }} password='{{ new_root_password }}'
