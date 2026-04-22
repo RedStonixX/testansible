@@ -16,61 +16,30 @@
     centreon_password: "Almacentreon1!"
 
     # --- Variables Vault ---
-    vault_path: "secret/data/servers/{{ inventory_hostname }}"
+    vault_path: "secret/servers/{{ inventory_hostname }}"
 
   tasks:
 
     # =========================
-    # 🔐 VAULT SAFE READ
+    # 🔐 PASSWORD (TOUJOURS NOUVEAU)
     # =========================
 
-    - name: Lire secret Vault (safe KV v2)
-      delegate_to: localhost
-      community.hashi_vault.vault_read:
-        url: "{{ lookup('env','VAULT_ADDR') }}"
-        token: "{{ lookup('env','VAULT_TOKEN') }}"
-        path: "secret/data/servers/{{ inventory_hostname }}"
-      register: vault_result
-      failed_when: false
-
-    - name: Extraire secret Vault
-      set_fact:
-        vault_secret: "{{ vault_result.data.data.password | default('') }}"
-
-    - name: Debug Vault secret
-      debug:
-        var: vault_secret
-        var: vault_result
-
-    # =========================
-    # 🔐 GENERATION PASSWORD
-    # =========================
-
-    - name: Générer mdp si absent dans Vault
-      when: (vault_secret | default('') | string | length) == 0
+    - name: Générer un nouveau mot de passe
       set_fact:
         new_root_password: "{{ lookup('password', '/dev/null length=5 chars=ascii_letters') }}"
 
-    - name: Définir mot de passe final (Vault ou nouveau)
+    - name: Définir mot de passe final
       set_fact:
-        final_password: >-
-          {{
-            vault_secret
-            if (vault_secret | default('') | trim != '')
-            else new_root_password
-          }}
+        final_password: "{{ new_root_password }}"
 
     # =========================
-    # 🔐 STOCKAGE VAULT
+    # 🔐 STOCKAGE VAULT (ÉCRASE TOUJOURS)
     # =========================
 
-    - name: Stocker mot de passe dans Vault
-      when:
-        - new_root_password is defined
-        - (vault_secret | default('') | string | length) == 0
+    - name: Écraser le mot de passe dans Vault
       delegate_to: localhost
       shell: >
-        vault kv put {{ vault_path }} password='{{ new_root_password }}'
+        vault kv put secret/servers/{{ inventory_hostname }} password="{{ new_root_password }}"
 
     # =========================
     # 🔐 HASH PASSWORD
@@ -108,7 +77,6 @@
         path: /etc/pam.d/sshd
         regexp: '^auth required pam_google_authenticator.so'
         line: "auth required pam_google_authenticator.so"
-        state: present
 
     - name: Activer KbdInteractiveAuthentication
       lineinfile:
@@ -171,12 +139,12 @@
       failed_when: false
 
     - name: Ajouter host Centreon si absent
+      when: centreon_host_check.stdout == ""
       delegate_to: localhost
       shell: >
         ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "
         centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a ADD
         -v '{{ inventory_hostname }};{{ inventory_hostname }};{{ ansible_host }};OS-Linux-SNMP-custom;central;'"
-      when: centreon_host_check.stdout == ""
 
     - name: Appliquer paramètres SNMP Centreon
       delegate_to: localhost
