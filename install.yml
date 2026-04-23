@@ -3,27 +3,18 @@
   become: yes
 
   vars:
-    # --- Variables MFA ---
     target_user: "root"
     local_otp_secret: "/root/ansible/.google_authenticator"
 
-    # --- Variables SNMP ---
     snmp_commu: "projet_communaute"
     centreon_ip: "192.168.1.8"
 
-    # --- Variables Centreon ---
     centreon_admin: "admin"
     centreon_password: "Almacentreon1!"
 
-    # --- Variables Vault ---
     vault_path: "secret/servers/{{ inventory_hostname }}"
 
   tasks:
-
-    # =========================
-    # 🔐 PASSWORD (TOUJOURS NOUVEAU)
-    # =========================
-
     - name: Générer un nouveau mot de passe
       set_fact:
         new_root_password: "{{ lookup('password', '/dev/null length=5 chars=ascii_letters') }}"
@@ -32,18 +23,10 @@
       set_fact:
         final_password: "{{ new_root_password }}"
 
-    # =========================
-    # 🔐 STOCKAGE VAULT (ÉCRASE TOUJOURS)
-    # =========================
-
     - name: Écraser le mot de passe dans Vault
       delegate_to: localhost
       shell: >
         vault kv put secret/servers/{{ inventory_hostname }} password="{{ new_root_password }}"
-
-    # =========================
-    # 🔐 HASH PASSWORD
-    # =========================
 
     - name: Hasher le mot de passe root
       set_fact:
@@ -53,10 +36,6 @@
       user:
         name: root
         password: "{{ root_password_hashed }}"
-
-    # =========================
-    # 🔐 MFA SSH
-    # =========================
 
     - name: Installer le module PAM Google Authenticator
       apt:
@@ -104,10 +83,6 @@
           AuthenticationMethods publickey keyboard-interactive
           PermitRootLogin yes
       notify: restart ssh
-
-    # =========================
-    # 🖧 SNMP + CENTREON
-    # =========================
 
     - name: Installation SNMP
       apt:
