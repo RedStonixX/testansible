@@ -10,59 +10,64 @@
     #########################################################
     # CROWDSEC
     #########################################################
-
+    
     - name: Check if CrowdSec is already installed
       stat:
         path: /etc/crowdsec/local_api_credentials.yaml
       register: crowdsec_installed
-
+    
     - name: Create CrowdSec machine
       delegate_to: localhost
-      become: false
+      become: true
       shell: |
         sudo cscli machines add {{ inventory_hostname }} -f - --auto
       register: crowdsec_creds
       when: not crowdsec_installed.stat.exists
-
+    
     - name: Debug CrowdSec output
       debug:
         var: crowdsec_creds.stdout
-
+      when: not crowdsec_installed.stat.exists
+    
     - name: Extract CrowdSec password
       set_fact:
-        crowdsec_password: >-
-          {{
-            crowdsec_creds.stdout
-            | regex_search('password: (.*)', '\1')
-            | first
-          }}
-      when: not crowdsec_installed.stat.exists
-
+        crowdsec_password: "{{ crowdsec_creds.stdout | regex_search('password:\\s*(.*)', '\\1') }}"
+      when:
+        - not crowdsec_installed.stat.exists
+        - crowdsec_creds.stdout is search('password:')
+    
+    - name: Fail if CrowdSec password is missing
+      fail:
+        msg: "Impossible de récupérer le password CrowdSec (cscli n'a rien retourné)"
+      when:
+        - not crowdsec_installed.stat.exists
+        - crowdsec_password is not defined
+    
     - name: Install CrowdSec repo
       shell: curl -s https://install.crowdsec.net | sudo sh
       when: not crowdsec_installed.stat.exists
-
+    
     - name: Apt update
       apt:
         update_cache: yes
       when: not crowdsec_installed.stat.exists
-
+    
     - name: Install CrowdSec
       apt:
         name: crowdsec
         state: present
       when: not crowdsec_installed.stat.exists
-
+    
     - name: Configure CrowdSec credentials
       copy:
         dest: /etc/crowdsec/local_api_credentials.yaml
         content: |
           url: http://{{ crowdsec_server_ip }}:8080/
-
+    
           login: {{ inventory_hostname }}
           password: {{ crowdsec_password }}
       when: not crowdsec_installed.stat.exists
-
+    
     - name: Restart CrowdSec
       systemd:
         name: crowdsec
