@@ -1,158 +1,105 @@
-- name: Configuration SNMP, Centreon et MFA SSH
-  hosts: serveurs
-  become: yes
+- name: Install CrowdSec + Wazuh
+  hosts: all
+  become: true
 
   vars:
-    target_user: "root"
-    local_otp_secret: "/root/ansible/.google_authenticator"
-
-    snmp_commu: "projet_communaute"
-    centreon_ip: "192.168.1.8"
-
-    centreon_admin: "admin"
-    centreon_password: "Almacentreon1!"
-
-    vault_path: "secret/servers/{{ inventory_hostname }}"
+    crowdsec_server_ip: "192.168.2.98"
+    wazuh_manager_ip: "192.168.2.99"
 
   tasks:
-    - name: Générer un nouveau mot de passe
+
+    #########################################################
+    # CROWDSEC
+    #########################################################
+
+    - name: Check if CrowdSec is already installed
+      stat:
+        path: /etc/crowdsec/local_api_credentials.yaml
+      register: crowdsec_installed
+
+    - name: Create CrowdSec machine on central
+      delegate_to: "{{ crowdsec_server_ip }}"
+      shell: |
+        cscli machines add {{ inventory_hostname }} -f - --auto
+      register: crowdsec_creds
+      when: not crowdsec_installed.stat.exists
+
+    - name: Extract CrowdSec password
       set_fact:
-        new_root_password: "{{ lookup('password', '/dev/null length=5 chars=ascii_letters') }}"
+        crowdsec_password: >-
+          {{
+            crowdsec_creds.stdout
+            | regex_search('password: (.*)', '\1')
+            | first
+          }}
+      when: not crowdsec_installed.stat.exists
 
-    - name: Définir mot de passe final
-      set_fact:
-        final_password: "{{ new_root_password }}"
+    - name: Install CrowdSec repo
+      shell: curl -s https://install.crowdsec.net | sudo sh
+      when: not crowdsec_installed.stat.exists
 
-    - name: Écraser le mot de passe dans Vault
-      delegate_to: localhost
-      shell: >
-        vault kv put secret/servers/{{ inventory_hostname }} password="{{ new_root_password }}"
-
-    - name: Hasher le mot de passe root
-      set_fact:
-        root_password_hashed: "{{ final_password | password_hash('sha512') }}"
-
-    - name: Appliquer le mot de passe root
-      user:
-        name: root
-        password: "{{ root_password_hashed }}"
-
-    - name: Installer le module PAM Google Authenticator
+    - name: Apt update
       apt:
-        name: libpam-google-authenticator
-        state: present
         update_cache: yes
+      when: not crowdsec_installed.stat.exists
 
-    - name: Déployer le secret OTP commun
-      copy:
-        src: "{{ local_otp_secret }}"
-        dest: "/{{ target_user }}/.google_authenticator"
-        owner: "{{ target_user }}"
-        group: "{{ target_user }}"
-        mode: '0400'
-
-    - name: Configurer PAM pour SSH (OTP)
-      lineinfile:
-        path: /etc/pam.d/sshd
-        regexp: '^auth required pam_google_authenticator.so'
-        line: "auth required pam_google_authenticator.so"
-
-    - name: Activer KbdInteractiveAuthentication
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^#?KbdInteractiveAuthentication'
-        line: 'KbdInteractiveAuthentication yes'
-
-    - name: Activer ChallengeResponseAuthentication
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^#?ChallengeResponseAuthentication'
-        line: 'ChallengeResponseAuthentication yes'
-
-    - name: Activer PasswordAuthentication
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^#?PasswordAuthentication'
-        line: 'PasswordAuthentication yes'
-
-    - name: Configurer SSH - MFA uniquement pour login interactif
-      blockinfile:
-        path: /etc/ssh/sshd_config
-        block: |
-          UsePAM yes
-          AuthenticationMethods publickey keyboard-interactive
-          PermitRootLogin yes
-      notify: restart ssh
-
-    - name: Installation SNMP
+    - name: Install CrowdSec
       apt:
-        name: [snmp, snmpd]
+        name: crowdsec
         state: present
+      when: not crowdsec_installed.stat.exists
 
-    - name: Supprimer ancienne config agentaddress
-      lineinfile:
-        path: /etc/snmp/snmpd.conf
-        regexp: '^agentaddress'
-        state: absent
+    - name: Configure CrowdSec credentials
+      copy:
+        dest: /etc/crowdsec/local_api_credentials.yaml
+        content: |
+          url: http://{{ crowdsec_server_ip }}:8080/
 
-    - name: Config SNMP
-      blockinfile:
-        path: /etc/snmp/snmpd.conf
-        block: |
-          agentaddress udp:161
-          view centreon included .1.3.6.1
-          rocommunity {{ snmp_commu }} {{ centreon_ip }}
-      notify: restart snmpd
+          login: {{ inventory_hostname }}
+          password: {{ crowdsec_password }}
+      when: not crowdsec_installed.stat.exists
 
-    - name: Vérifier host Centreon
-      delegate_to: localhost
-      shell: >
-        ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "
-        centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a show -v '{{ inventory_hostname }}'"
-      register: centreon_host_check
-      changed_when: false
-      failed_when: false
-
-    - name: Ajouter host Centreon si absent
-      when: centreon_host_check.stdout == ""
-      delegate_to: localhost
-      shell: >
-        ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "
-        centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a ADD
-        -v '{{ inventory_hostname }};{{ inventory_hostname }};{{ ansible_host }};OS-Linux-SNMP-custom;central;'"
-
-    - name: Appliquer paramètres SNMP Centreon
-      delegate_to: localhost
-      shell: >
-        ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "
-        centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a setparam
-        -v '{{ inventory_hostname }};{{ item.param }};{{ item.value }}'"
-      loop:
-        - { param: 'snmp_community', value: "{{ snmp_commu }}" }
-        - { param: 'snmp_version', value: '2c' }
-
-    - name: Générer services Centreon
-      delegate_to: localhost
-      shell: >
-        ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "
-        centreon -u {{ centreon_admin }} -p {{ centreon_password }} -o HOST -a applytpl
-        -v '{{ inventory_hostname }}'"
-
-    - name: Appliquer config Centreon
-      delegate_to: localhost
-      shell: >
-        ssh -i ~/ansible/privcentreon root@{{ centreon_ip }} "
-        centreon -u {{ centreon_admin }} -p {{ centreon_password }} -a APPLYCFG
-        -v 'Central'"
-
-  handlers:
-
-    - name: restart snmpd
-      service:
-        name: snmpd
+    - name: Restart CrowdSec
+      systemd:
+        name: crowdsec
+        enabled: yes
         state: restarted
+      when: not crowdsec_installed.stat.exists
 
-    - name: restart ssh
-      service:
-        name: ssh
-        state: restarted
+
+    #########################################################
+    # WAZUH
+    #########################################################
+
+    - name: Check if Wazuh already installed
+      stat:
+        path: /var/ossec/bin/wazuh-control
+      register: wazuh_installed
+
+    - name: Download Wazuh Agent
+      get_url:
+        url: https://packages.wazuh.com/4.x/apt/pool/main/w/wazuh-agent/wazuh-agent_4.14.5-1_amd64.deb
+        dest: /tmp/wazuh-agent.deb
+      when: not wazuh_installed.stat.exists
+
+    - name: Install Wazuh Agent
+      shell: |
+        WAZUH_MANAGER='{{ wazuh_manager_ip }}' dpkg -i /tmp/wazuh-agent.deb
+      when: not wazuh_installed.stat.exists
+
+    - name: Reload systemd
+      systemd:
+        daemon_reload: yes
+      when: not wazuh_installed.stat.exists
+
+    - name: Enable Wazuh
+      systemd:
+        name: wazuh-agent
+        enabled: yes
+      when: not wazuh_installed.stat.exists
+
+    - name: Start Wazuh
+      systemd:
+        name: wazuh-agent
+        state: started
+      when: not wazuh_installed.stat.exists
