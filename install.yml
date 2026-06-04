@@ -25,10 +25,6 @@
       register: crowdsec_creds
       when: not crowdsec_installed.stat.exists
     
-    - name: Debug CrowdSec output
-      debug:
-        var: crowdsec_creds.stdout
-    
     - name: Extract CrowdSec password
       set_fact:
         crowdsec_password: "{{ (crowdsec_creds.stderr | regex_findall('password:\\s*([^\\n]+)') | first) | trim }}"
