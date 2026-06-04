@@ -27,14 +27,17 @@
     - name: Debug CrowdSec output
       debug:
         var: crowdsec_creds.stdout
-      when: not crowdsec_installed.stat.exists
     
     - name: Extract CrowdSec password
       set_fact:
-        crowdsec_password: "{{ crowdsec_creds.stdout | regex_search('password:\\s*(.*)', '\\1') }}"
-      when:
-        - not crowdsec_installed.stat.exists
-        - crowdsec_creds.stdout is search('password:')
+        crowdsec_password: >-
+          {{
+            (crowdsec_creds.stderr_lines
+            | select('search', '^password:')
+            | map('regex_replace', '^password:\\s*', '')
+            | first)
+          }}
+      when: not crowdsec_installed.stat.exists
     
     - name: Fail if CrowdSec password is missing
       fail:
