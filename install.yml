@@ -3,7 +3,6 @@
   become: true
 
   vars:
-    crowdsec_server_ip: "192.168.2.98"
     wazuh_manager_ip: "192.168.2.99"
 
   tasks:
@@ -17,12 +16,17 @@
         path: /etc/crowdsec/local_api_credentials.yaml
       register: crowdsec_installed
 
-    - name: Create CrowdSec machine on central
-      delegate_to: "{{ crowdsec_server_ip }}"
+    - name: Create CrowdSec machine
+      delegate_to: localhost
+      become: false
       shell: |
-        cscli machines add {{ inventory_hostname }} -f - --auto
+        sudo cscli machines add {{ inventory_hostname }} -f - --auto
       register: crowdsec_creds
       when: not crowdsec_installed.stat.exists
+
+    - name: Debug CrowdSec output
+      debug:
+        var: crowdsec_creds.stdout
 
     - name: Extract CrowdSec password
       set_fact:
