@@ -3,6 +3,7 @@
   become: true
 
   vars:
+    crowsec_server_ip: "192.168.2.98"
     wazuh_manager_ip: "192.168.2.99"
 
   tasks:
@@ -18,7 +19,7 @@
     
     - name: Create CrowdSec machine
       delegate_to: localhost
-      become: true
+      become: false
       shell: |
         sudo cscli machines add {{ inventory_hostname }} -f - --auto
       register: crowdsec_creds
@@ -68,8 +69,7 @@
           url: http://{{ crowdsec_server_ip }}:8080/
     
           login: {{ inventory_hostname }}
-          password: {{ crowdsec_password }}
-      when: not crowdsec_installed.stat.exists
+          password: {{ crowdsec_password | trim }}
     
     - name: Restart CrowdSec
       systemd:
