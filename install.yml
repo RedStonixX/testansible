@@ -3,7 +3,7 @@
   become: true
 
   vars:
-    crowsec_server_ip: "192.168.2.98"
+    crowdsec_server_ip: "192.168.2.98"
     wazuh_manager_ip: "192.168.2.99"
 
   tasks:
@@ -31,13 +31,7 @@
     
     - name: Extract CrowdSec password
       set_fact:
-        crowdsec_password: >-
-          {{
-            (crowdsec_creds.stderr_lines
-            | select('search', '^password:')
-            | map('regex_replace', '^password:\\s*', '')
-            | first)
-          }}
+        crowdsec_password: "{{ crowdsec_creds.stderr | regex_search('password:\\s*([^\n]+)', '\\1') }}"
       when: not crowdsec_installed.stat.exists
     
     - name: Fail if CrowdSec password is missing
